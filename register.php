@@ -8,6 +8,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $role = $_POST['role'];
     $password_raw = $_POST['password'];
     $confirm_password = $_POST['confirm_password'];
+    
+    // Capture the student-specific fields
+    $student_no = ($role === 'Student') ? trim($_POST['student_no']) : null;
+    $email = ($role === 'Student') ? trim($_POST['email']) : null;
+    $course_section = ($role === 'Student') ? trim($_POST['course_section']) : null;
 
     // Server-side validation
     $isValid = true;
@@ -25,22 +30,49 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     } elseif ($password_raw !== $confirm_password) {
         $isValid = false;
         $errorMsg = "Passwords do not match.";
+    } elseif ($role === 'Student') {
+        if (empty($student_no)) {
+            $isValid = false;
+            $errorMsg = "Student number is required.";
+        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $isValid = false;
+            $errorMsg = "A valid email address is required for students.";
+        } elseif (empty($course_section)) {
+            $isValid = false;
+            $errorMsg = "Course & Section is required for students.";
+        }
     }
 
     if ($isValid) {
         $password = password_hash($password_raw, PASSWORD_DEFAULT);
-        $sql = "INSERT INTO user (username, password, full_name, role) VALUES (?, ?, ?, ?)";
         
-        if ($stmt = $mysql->prepare($sql)) {
-            $stmt->bind_param("ssss", $username, $password, $full_name, $role);
-            if ($stmt->execute()) {
-                $message = "<script>document.addEventListener('DOMContentLoaded', function() { Swal.fire({title: 'Registration Successful!', text: 'Your account has been created.', icon: 'success', showCancelButton: false, confirmButtonColor: '#11998e', confirmButtonText: 'Yes, Go to Login'}).then((result) => {if (result.isConfirmed) {window.location.href = 'login.php';}});});</script>";
-            } else {
-                $message = "<script>document.addEventListener('DOMContentLoaded', function() { Swal.fire({icon: 'error', title: 'Registration Failed!', text: 'Error: Username might already exist.', confirmButtonColor: '#d33', confirmButtonText: '✖ Try Again'});});</script>";
+        // Start a database transaction so both tables update together
+        $mysql->begin_transaction();
+        
+        try {
+            // 1. Insert into USER table (Authentication)
+            $sql_user = "INSERT INTO user (username, password, full_name, role, status) VALUES (?, ?, ?, ?, 1)";
+            $stmt_user = $mysql->prepare($sql_user);
+            $stmt_user->bind_param("ssss", $username, $password, $full_name, $role);
+            $stmt_user->execute();
+            $stmt_user->close();
+
+            // 2. Insert into STUDENTS table (Profile & Borrowing Reference)
+            if ($role === 'Student') {
+                $sql_student = "INSERT INTO students (student_id, full_name, course_section, email) VALUES (?, ?, ?, ?)";
+                $stmt_student = $mysql->prepare($sql_student);
+                $stmt_student->bind_param("ssss", $student_no, $full_name, $course_section, $email);
+                $stmt_student->execute();
+                $stmt_student->close();
             }
-            $stmt->close();
-        } else {
-            $message = "<script>document.addEventListener('DOMContentLoaded', function() { Swal.fire({icon: 'error', title: 'Database Error', text: 'Could not prepare statement.', confirmButtonColor: '#d33', confirmButtonText: '✖ Try Again'});});</script>";
+
+            // Commit transaction
+            $mysql->commit();
+            $message = "<script>document.addEventListener('DOMContentLoaded', function() { Swal.fire({title: 'Registration Successful!', text: 'Your account has been created.', icon: 'success', showCancelButton: false, confirmButtonColor: '#11998e', confirmButtonText: 'Yes, Go to Login'}).then((result) => {if (result.isConfirmed) {window.location.href = 'login.php';}});});</script>";
+
+        } catch (Exception $e) {
+            $mysql->rollback();
+            $message = "<script>document.addEventListener('DOMContentLoaded', function() { Swal.fire({icon: 'error', title: 'Registration Failed!', text: 'Error: Username or Student No. already exists.', confirmButtonColor: '#d33', confirmButtonText: '✖ Try Again'});});</script>";
         }
     } else {
         $message = "<script>document.addEventListener('DOMContentLoaded', function() { Swal.fire({icon: 'warning', title: 'Invalid Input', text: '$errorMsg', confirmButtonColor: '#d33', confirmButtonText: '✖ Fix and Try Again'});});</script>";
@@ -125,6 +157,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             </select>
           </div>
 
+          <div id="student_fields" class="d-none">
+            <div class="mb-3">
+              <label class="form-label small text-dark-50" for="student_no">Student No.</label>
+              <input type="text" name="student_no" id="student_no" class="form-control" placeholder="e.g. 2024-0001" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label small text-dark-50" for="course_section">Course & Section</label>
+              <input type="text" name="course_section" id="course_section" class="form-control" placeholder="e.g. BSIS 3A" />
+            </div>
+            <div class="mb-4">
+              <label class="form-label small text-dark-50" for="email">Email Address</label>
+              <input type="email" name="email" id="email" class="form-control" placeholder="student@example.com" />
+            </div>
+          </div>
+
           <button class="btn btn-outline-dark btn-lg w-100 fw-bold mt-2" type="submit">REGISTER</button>
         </form>
 
@@ -146,6 +193,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         const passwordInput = document.getElementById("password");
         const confirmInput = document.getElementById("confirm_password");
         const passRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{8,}$/;
+        
+        const roleSelect = document.getElementById("role");
+        const studentFields = document.getElementById("student_fields");
+        const studentNoInput = document.getElementById("student_no");
+        const courseSectionInput = document.getElementById("course_section");
+        const emailInput = document.getElementById("email");
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
         function setupToggle(inputId, iconId) {
             const input = document.getElementById(inputId);
@@ -157,7 +211,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     icon.classList.add("bi-eye");
                 } else {
                     input.type = "password";
-                    icon.classList.remove("bi-eye");
+                    icon.classList.remove("bi-eye");    
                     icon.classList.add("bi-eye-slash");
                 }
             });
@@ -175,6 +229,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             }
         }
 
+        function toggleStudentFields() {
+            if (roleSelect.value === "Student") {
+                studentFields.classList.remove("d-none");
+            } else {
+                studentFields.classList.add("d-none");
+                studentNoInput.value = "";
+                courseSectionInput.value = "";
+                emailInput.value = "";
+                studentNoInput.classList.remove("input-invalid", "input-valid");
+                courseSectionInput.classList.remove("input-invalid", "input-valid");
+                emailInput.classList.remove("input-invalid", "input-valid");
+            }
+        }
+        roleSelect.addEventListener("change", toggleStudentFields);
+        toggleStudentFields(); 
+
         fullNameInput.addEventListener("input", function() { setValidationState(this, this.value.trim().length >= 2); });
         usernameInput.addEventListener("input", function() { setValidationState(this, this.value.length >= 8 && this.value.length <= 16); });
         passwordInput.addEventListener("input", function() {
@@ -187,25 +257,48 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             setValidationState(confirmInput, isValid);
         }
         confirmInput.addEventListener("input", validateConfirmPassword);
+        
+        studentNoInput.addEventListener("input", function() { setValidationState(this, this.value.trim().length > 0); });
+        courseSectionInput.addEventListener("input", function() { setValidationState(this, this.value.trim().length > 0); });
+        emailInput.addEventListener("input", function() { setValidationState(this, emailRegex.test(this.value)); });
 
         form.addEventListener("submit", function(e) {
             const isFullValid = fullNameInput.value.trim().length >= 2;
             const isUserValid = usernameInput.value.length >= 8 && usernameInput.value.length <= 16;
             const isPassValid = passRegex.test(passwordInput.value);
             const isConfValid = confirmInput.value === passwordInput.value && passwordInput.value.length > 0;
+            
+            let isStudentNoValid = true;
+            let isCourseSectionValid = true;
+            let isEmailValid = true;
 
-            if (!isFullValid || !isUserValid || !isPassValid || !isConfValid) {
+            if (roleSelect.value === "Student") {
+                isStudentNoValid = studentNoInput.value.trim().length > 0;
+                isCourseSectionValid = courseSectionInput.value.trim().length > 0;
+                isEmailValid = emailRegex.test(emailInput.value);
+            }
+
+            if (!isFullValid || !isUserValid || !isPassValid || !isConfValid || !isStudentNoValid || !isCourseSectionValid || !isEmailValid) {
                 e.preventDefault(); 
                 setValidationState(fullNameInput, isFullValid);
                 setValidationState(usernameInput, isUserValid);
                 setValidationState(passwordInput, isPassValid);
                 setValidationState(confirmInput, isConfValid);
 
+                if (roleSelect.value === "Student") {
+                    setValidationState(studentNoInput, isStudentNoValid);
+                    setValidationState(courseSectionInput, isCourseSectionValid);
+                    setValidationState(emailInput, isEmailValid);
+                }
+
                 let errorHtml = "<div style='text-align:left; font-size: 0.9rem;'><ul>";
                 if (!isFullValid) errorHtml += "<li><strong>Full Name</strong> requires at least 2 characters.</li>";
                 if (!isUserValid) errorHtml += "<li><strong>Username</strong> must be 8-16 characters.</li>";
                 if (!isPassValid) errorHtml += "<li><strong>Password</strong> needs 8+ chars, 1 uppercase, 1 lowercase, and 1 number.</li>";
                 if (!isConfValid) errorHtml += "<li><strong>Passwords</strong> do not match.</li>";
+                if (!isStudentNoValid) errorHtml += "<li><strong>Student No.</strong> is required for students.</li>";
+                if (!isCourseSectionValid) errorHtml += "<li><strong>Course & Section</strong> is required for students.</li>";
+                if (!isEmailValid) errorHtml += "<li><strong>Email Address</strong> is invalid or missing.</li>";
                 errorHtml += "</ul></div>";
 
                 Swal.fire({
